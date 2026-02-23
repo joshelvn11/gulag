@@ -48,6 +48,7 @@ DEFAULT_MONITOR_TIMEOUT_MS = 400
 DEFAULT_MONITOR_BUFFER_MAX_EVENTS = 5000
 DEFAULT_MONITOR_BUFFER_FLUSH_MS = 1000
 DEFAULT_MONITOR_SPOOL_FILE = ".chief/telemetry_spool.jsonl"
+DEFAULT_MONITOR_HEARTBEAT_SECONDS = 15
 
 DAY_NAME_TO_CRON = {
     "sunday": 0,
@@ -214,6 +215,7 @@ class MonitorSettings:
     endpoint: str
     api_key: str
     timeout_ms: int
+    heartbeat_seconds: int
     buffer: MonitorBufferSettings
 
 
@@ -421,6 +423,62 @@ class MonitorEmitter:
                 spool_path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Monitor emitter failed to replay spool: %s", str(exc))
+
+
+class ChiefHeartbeat:
+    """Periodic chief heartbeat emitter used for online/offline presence."""
+
+    def __init__(
+        self,
+        emitter: Optional[MonitorEmitter],
+        settings: MonitorSettings,
+        mode: str,
+    ):
+        self._emitter = emitter
+        self._settings = settings
+        self._mode = mode
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if not self._settings.enabled or self._emitter is None:
+            return
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"chief-heartbeat-{self._mode}",
+        )
+        self._thread.start()
+
+    def stop(self, timeout_seconds: float = 1.0) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout_seconds)
+
+    def _run(self) -> None:
+        self._emit_once()
+        interval_seconds = max(1, self._settings.heartbeat_seconds)
+        while not self._stop_event.wait(interval_seconds):
+            self._emit_once()
+
+    def _emit_once(self) -> None:
+        emit_monitor_event(
+            self._emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="chief.heartbeat",
+                level="INFO",
+                message=f"Chief heartbeat ({self._mode}).",
+                event_at=datetime.now(tz=UTC),
+                metadata={
+                    "ping_interval_seconds": self._settings.heartbeat_seconds,
+                    "mode": self._mode,
+                    "pid": os.getpid(),
+                },
+            ),
+        )
 
 
 def monitor_check_metadata(job_monitor: JobMonitorSettings) -> Dict[str, Any]:
@@ -775,6 +833,7 @@ def parse_monitor_settings(
             endpoint=DEFAULT_MONITOR_ENDPOINT,
             api_key="",
             timeout_ms=DEFAULT_MONITOR_TIMEOUT_MS,
+            heartbeat_seconds=DEFAULT_MONITOR_HEARTBEAT_SECONDS,
             buffer=MonitorBufferSettings(
                 max_events=DEFAULT_MONITOR_BUFFER_MAX_EVENTS,
                 flush_interval_ms=DEFAULT_MONITOR_BUFFER_FLUSH_MS,
@@ -784,7 +843,14 @@ def parse_monitor_settings(
     if not isinstance(raw, dict):
         raise ConfigError(f"Error: {field_path} must be a mapping.")
 
-    unknown = set(raw.keys()) - {"enabled", "endpoint", "api_key", "timeout_ms", "buffer"}
+    unknown = set(raw.keys()) - {
+        "enabled",
+        "endpoint",
+        "api_key",
+        "timeout_ms",
+        "heartbeat_seconds",
+        "buffer",
+    }
     if unknown:
         raise ConfigError(f"Error: Unknown keys in {field_path}: {sorted(unknown)}.")
 
@@ -796,6 +862,12 @@ def parse_monitor_settings(
     if not isinstance(api_key_raw, str):
         raise ConfigError(f"Error: {field_path}.api_key must be a string.")
     timeout_ms = ensure_int(raw.get("timeout_ms"), f"{field_path}.timeout_ms", DEFAULT_MONITOR_TIMEOUT_MS, 1)
+    heartbeat_seconds = ensure_int(
+        raw.get("heartbeat_seconds"),
+        f"{field_path}.heartbeat_seconds",
+        DEFAULT_MONITOR_HEARTBEAT_SECONDS,
+        1,
+    )
 
     buffer_raw = raw.get("buffer", {}) or {}
     if not isinstance(buffer_raw, dict):
@@ -827,6 +899,7 @@ def parse_monitor_settings(
         endpoint=endpoint,
         api_key=api_key_raw,
         timeout_ms=timeout_ms,
+        heartbeat_seconds=heartbeat_seconds,
         buffer=MonitorBufferSettings(
             max_events=max_events,
             flush_interval_ms=flush_interval_ms,
@@ -896,6 +969,7 @@ def effective_monitor_settings(settings: MonitorSettings, runtimes: List[JobRunt
         endpoint=settings.endpoint,
         api_key=settings.api_key,
         timeout_ms=settings.timeout_ms,
+        heartbeat_seconds=settings.heartbeat_seconds,
         buffer=settings.buffer,
     )
 
@@ -1828,9 +1902,11 @@ def command_run(config_path: Path, job_name: Optional[str], respect_schedule: bo
         selected,
     )
     monitor_emitter = MonitorEmitter(monitor_settings)
+    heartbeat = ChiefHeartbeat(monitor_emitter, monitor_settings, mode="run")
 
     exit_code = 0
     now = datetime.now(tz=UTC)
+    heartbeat.start()
     try:
         for runtime in selected:
             if respect_schedule and not is_due_now(runtime, at_utc=now):
@@ -1840,6 +1916,7 @@ def command_run(config_path: Path, job_name: Optional[str], respect_schedule: bo
             if not result.success:
                 exit_code = 1
     finally:
+        heartbeat.stop()
         monitor_emitter.close()
     return exit_code
 
@@ -1885,6 +1962,7 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
         selected,
     )
     monitor_emitter = MonitorEmitter(monitor_settings)
+    heartbeat = ChiefHeartbeat(monitor_emitter, monitor_settings, mode="daemon")
 
     now = datetime.now(tz=UTC)
     states: Dict[str, JobState] = {}
@@ -1939,6 +2017,7 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
         len(selected),
         poll_seconds,
     )
+    heartbeat.start()
     try:
         while True:
             now = datetime.now(tz=UTC)
@@ -2065,6 +2144,7 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
         logger.info("Daemon interrupted by user.")
         return 130
     finally:
+        heartbeat.stop()
         monitor_emitter.close()
 
 

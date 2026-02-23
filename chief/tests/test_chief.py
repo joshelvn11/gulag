@@ -321,6 +321,27 @@ def test_monitor_endpoint_validation(tmp_path: Path) -> None:
         chief.parse_config(config_path)
 
 
+def test_monitor_heartbeat_seconds_validation(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "task.py"
+    _write_script(script, "print('ok')\n")
+    cfg = _base_config({"frequency": "daily", "time": "06:00"}, [{"path": "scripts/task.py"}])
+    cfg["monitor"] = {"enabled": True, "endpoint": "http://127.0.0.1:7410", "heartbeat_seconds": 0}
+    config_path = _write_config(tmp_path, cfg)
+    with pytest.raises(chief.ConfigError, match="monitor.heartbeat_seconds"):
+        chief.parse_config(config_path)
+
+
+def test_monitor_heartbeat_seconds_parsed(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "task.py"
+    _write_script(script, "print('ok')\n")
+    cfg = _base_config({"frequency": "daily", "time": "06:00"}, [{"path": "scripts/task.py"}])
+    cfg["monitor"] = {"enabled": True, "endpoint": "http://127.0.0.1:7410", "heartbeat_seconds": 7}
+    config_path = _write_config(tmp_path, cfg)
+
+    settings = chief.parse_monitor_settings_from_file(config_path)
+    assert settings.heartbeat_seconds == 7
+
+
 def test_job_monitor_inherits_global_enabled(tmp_path: Path) -> None:
     script = tmp_path / "scripts" / "task.py"
     _write_script(script, "print('ok')\n")

@@ -4,6 +4,9 @@ import { MonitorConfig } from "../types.js";
 import { alertDeliveries, alerts, checkStates, telemetryEvents } from "../db/schema.js";
 
 const HEARTBEAT_EVENT_TYPES = new Set(["job.started", "job.completed", "job.failed"]);
+const CHIEF_HEARTBEAT_EVENT_TYPE = "chief.heartbeat";
+const DEFAULT_CHIEF_OFFLINE_AFTER_SECONDS = 45;
+const MIN_CHIEF_OFFLINE_AFTER_SECONDS = 5;
 
 type EventPayload = {
   sourceType: "chief" | "worker" | "monitor";
@@ -65,6 +68,20 @@ function asInt(value: unknown, fallback: number): number {
     }
   }
   return fallback;
+}
+
+function parsePositiveIntOrNull(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = Math.trunc(value);
+    return normalized > 0 ? normalized : null;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -502,11 +519,49 @@ export class MonitorService {
       .from(telemetryEvents)
       .get();
 
+    const latestChiefHeartbeat = this.db
+      .select({
+        eventAt: telemetryEvents.eventAt,
+        metadataJson: telemetryEvents.metadataJson,
+      })
+      .from(telemetryEvents)
+      .where(
+        and(
+          eq(telemetryEvents.sourceType, "chief"),
+          eq(telemetryEvents.eventType, CHIEF_HEARTBEAT_EVENT_TYPE)
+        )
+      )
+      .orderBy(desc(telemetryEvents.eventAt))
+      .limit(1)
+      .get() as { eventAt: string; metadataJson: string } | undefined;
+
+    const heartbeatMeta = parseJson<Record<string, unknown>>(latestChiefHeartbeat?.metadataJson ?? null, {});
+    const pingIntervalSeconds = parsePositiveIntOrNull(heartbeatMeta.ping_interval_seconds);
+    const offlineAfterSeconds =
+      pingIntervalSeconds !== null
+        ? Math.max(MIN_CHIEF_OFFLINE_AFTER_SECONDS, pingIntervalSeconds * 2)
+        : DEFAULT_CHIEF_OFFLINE_AFTER_SECONDS;
+
+    let chiefOnline = false;
+    const lastHeartbeatAt = latestChiefHeartbeat?.eventAt ?? null;
+    if (lastHeartbeatAt) {
+      const lastHeartbeatMs = Date.parse(lastHeartbeatAt);
+      if (Number.isFinite(lastHeartbeatMs)) {
+        chiefOnline = Date.now() - lastHeartbeatMs <= offlineAfterSeconds * 1000;
+      }
+    }
+
     return {
       checks: statusCounts,
       activeAlerts: activeAlertCounts,
       totalEvents: totalEventsRow?.count ?? 0,
       latestEventAt: latestEventRow?.latest ?? null,
+      chief: {
+        online: chiefOnline,
+        lastHeartbeatAt,
+        pingIntervalSeconds,
+        offlineAfterSeconds,
+      },
     };
   }
 

@@ -43,6 +43,7 @@ Chief emits:
 - `job.completed`
 - `job.failed`
 - `job.next_scheduled`
+- `chief.heartbeat`
 - `daemon.dispatch`
 - `daemon.overlap_skipped`
 - `daemon.queued_pending`
@@ -166,6 +167,7 @@ monitor:
   endpoint: http://127.0.0.1:7410
   api_key: ""
   timeout_ms: 400
+  heartbeat_seconds: 15
   buffer:
     max_events: 5000
     flush_interval_ms: 1000
@@ -190,6 +192,7 @@ jobs:
 
 - `monitor.endpoint` must be `http://` or `https://`.
 - `timeout_ms > 0`
+- `heartbeat_seconds > 0`
 - `buffer.max_events > 0`
 - `buffer.flush_interval_ms > 0`
 - `check.grace_seconds >= 0`

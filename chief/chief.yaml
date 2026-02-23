@@ -11,6 +11,7 @@ monitor:
   endpoint: http://127.0.0.1:7410
   api_key: ""
   timeout_ms: 400
+  heartbeat_seconds: 15
   buffer:
     max_events: 5000
     flush_interval_ms: 1000

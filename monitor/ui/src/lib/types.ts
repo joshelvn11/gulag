@@ -5,6 +5,12 @@ export type SummaryResponse = {
   activeAlerts: Array<{ alertType: string; count: number }>;
   totalEvents: number;
   latestEventAt: string | null;
+  chief: {
+    online: boolean;
+    lastHeartbeatAt: string | null;
+    pingIntervalSeconds: number | null;
+    offlineAfterSeconds: number;
+  };
 };
 
 export type LatestEvent = {

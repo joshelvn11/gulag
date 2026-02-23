@@ -70,6 +70,11 @@ export function OverviewPage() {
   }, [summaryQuery.data?.activeAlerts]);
 
   const isLoading = summaryQuery.isLoading || alertsQuery.isLoading;
+  const chiefPresence = summaryQuery.data?.chief;
+  const chiefOnline = chiefPresence?.online ?? false;
+  const chiefLastHeartbeat = chiefPresence?.lastHeartbeatAt ?? null;
+  const chiefIntervalSeconds = chiefPresence?.pingIntervalSeconds ?? null;
+  const chiefOfflineAfterSeconds = chiefPresence?.offlineAfterSeconds ?? 0;
 
   const refresh = () => {
     void summaryQuery.refetch();
@@ -115,6 +120,25 @@ export function OverviewPage() {
           label="Last Event Age"
           value={formatRelative(summaryQuery.data?.latestEventAt)}
           detail="Calculated from monitor event stream"
+        />
+        <MetricCard
+          label="Chief Runtime"
+          value={
+            <span className="presence-indicator">
+              <span
+                className={`presence-dot ${chiefOnline ? "is-online" : "is-offline"}`}
+                aria-label={chiefOnline ? "Chief online" : "Chief offline"}
+              />
+              <span>{chiefOnline ? "ONLINE" : "OFFLINE"}</span>
+            </span>
+          }
+          detail={
+            chiefLastHeartbeat
+              ? `Last ping ${formatRelative(chiefLastHeartbeat)} (${formatDateTime(chiefLastHeartbeat)}), interval ${
+                  chiefIntervalSeconds !== null ? `${chiefIntervalSeconds}s` : "unknown"
+                }`
+              : `No heartbeat seen yet. Offline timeout ${chiefOfflineAfterSeconds}s`
+          }
         />
       </div>
 

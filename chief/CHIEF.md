@@ -251,6 +251,7 @@ monitor:
   endpoint: http://127.0.0.1:7410
   api_key: ""
   timeout_ms: 400
+  heartbeat_seconds: 15
   buffer:
     max_events: 5000
     flush_interval_ms: 1000
@@ -341,6 +342,7 @@ Top-level monitor block:
 - `endpoint` (must start with `http://` or `https://`)
 - `api_key` (optional; sent as `x-api-key`)
 - `timeout_ms` (> 0)
+- `heartbeat_seconds` (> 0, interval for `chief.heartbeat` presence pings)
 - `buffer.max_events` (> 0)
 - `buffer.flush_interval_ms` (> 0)
 - `buffer.spool_file` (local fallback JSONL path)
@@ -586,6 +588,7 @@ Chief emits these event types:
 - `job.completed`
 - `job.failed`
 - `job.next_scheduled`
+- `chief.heartbeat`
 - `daemon.dispatch`
 - `daemon.overlap_skipped`
 - `daemon.queued_pending`

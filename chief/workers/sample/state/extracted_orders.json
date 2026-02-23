@@ -1,0 +1,278 @@
+{
+  "batch_id": "extract-1771886225",
+  "source": "mock-orders-api",
+  "generated_at": "2026-02-23T22:37:05.697009+00:00",
+  "record_count": 30,
+  "records": [
+    {
+      "order_id": "DEMO-123-00001",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "direct",
+      "product": "mug",
+      "item_count": 2,
+      "order_total": 16.6,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00002",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "direct",
+      "product": "filter",
+      "item_count": 1,
+      "order_total": 24.09,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00003",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "tea",
+      "item_count": 6,
+      "order_total": 85.69,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00004",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "paid-search",
+      "product": "tea",
+      "item_count": 6,
+      "order_total": 27.8,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00005",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "filter",
+      "item_count": 7,
+      "order_total": 9.73,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00006",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "email",
+      "product": "grinder",
+      "item_count": 1,
+      "order_total": 60.66,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00007",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "tea",
+      "item_count": 1,
+      "order_total": 23.33,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00008",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "email",
+      "product": "grinder",
+      "item_count": 1,
+      "order_total": 26.61,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00009",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "direct",
+      "product": "coffee",
+      "item_count": 5,
+      "order_total": 87.2,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00010",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "grinder",
+      "item_count": 6,
+      "order_total": 113.67,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00011",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "grinder",
+      "item_count": 6,
+      "order_total": 37.53,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00012",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "filter",
+      "item_count": 7,
+      "order_total": 130.49,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00013",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "grinder",
+      "item_count": 8,
+      "order_total": 130.11,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00014",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "paid-search",
+      "product": "coffee",
+      "item_count": 1,
+      "order_total": 60.25,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00015",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "paid-search",
+      "product": "mug",
+      "item_count": 5,
+      "order_total": 133.3,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00016",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "grinder",
+      "item_count": 7,
+      "order_total": 55.15,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00017",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "tea",
+      "item_count": 6,
+      "order_total": 62.03,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00018",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "mug",
+      "item_count": 6,
+      "order_total": 88.93,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00019",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "filter",
+      "item_count": 7,
+      "order_total": 144.67,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00020",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "email",
+      "product": "grinder",
+      "item_count": 1,
+      "order_total": 107.56,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00021",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "grinder",
+      "item_count": 4,
+      "order_total": 140.13,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00022",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "grinder",
+      "item_count": 3,
+      "order_total": 142.38,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00023",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "coffee",
+      "item_count": 8,
+      "order_total": 60.8,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00024",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "mug",
+      "item_count": 4,
+      "order_total": 27.76,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00025",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "direct",
+      "product": "grinder",
+      "item_count": 5,
+      "order_total": 117.75,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00026",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "social",
+      "product": "mug",
+      "item_count": 2,
+      "order_total": 9.55,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00027",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "direct",
+      "product": "coffee",
+      "item_count": 2,
+      "order_total": 105.31,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00028",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "filter",
+      "item_count": 7,
+      "order_total": 117.32,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00029",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "mug",
+      "item_count": 7,
+      "order_total": 103.56,
+      "currency": "USD"
+    },
+    {
+      "order_id": "DEMO-123-00030",
+      "event_time": "2026-02-23T22:37:05+00:00",
+      "channel": "organic",
+      "product": "filter",
+      "item_count": 8,
+      "order_total": 45.07,
+      "currency": "USD"
+    }
+  ]
+}
