@@ -34,6 +34,22 @@ npm install
 npm run dev
 ```
 
+Optional: start monitor UI in a second terminal:
+
+```bash
+cd monitor
+npm run ui:install
+npm run ui:dev
+```
+
+Built monitor UI is served by monitor service at `http://127.0.0.1:7410/` after:
+
+```bash
+cd monitor
+npm run ui:build
+npm run start
+```
+
 Run the scheduler daemon:
 
 ```bash

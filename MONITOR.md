@@ -12,6 +12,7 @@ It covers:
 - check/alert behavior
 - reliability semantics (buffer/spool/non-blocking)
 - troubleshooting and runbook steps
+- integrated web UI dashboard
 
 ## 1. Architecture
 
@@ -106,6 +107,54 @@ Health check:
 ```bash
 curl -s http://127.0.0.1:7410/v1/health
 ```
+
+## 3.3 Monitor UI (React Dashboard)
+
+The monitor service includes an integrated web UI served from the same host/port.
+
+UI route map:
+
+- `/` overview dashboard
+- `/jobs` job health list
+- `/jobs/:jobName` job detail
+- `/alerts` alerts explorer
+- `/events` events explorer
+
+### Local UI development (two terminals)
+
+Terminal A:
+
+```bash
+cd monitor
+npm run dev
+```
+
+Terminal B:
+
+```bash
+cd monitor
+npm run ui:install
+npm run ui:dev
+```
+
+Vite dev URL:
+
+- `http://127.0.0.1:5173`
+
+Vite proxy forwards `/v1` API calls to `http://127.0.0.1:7410`.
+
+### Build + integrated serving
+
+```bash
+cd monitor
+npm run ui:build
+npm run build
+npm run start
+```
+
+Built UI is served by Express at:
+
+- `http://127.0.0.1:7410/`
 
 ## 4. Chief Configuration (`chief.yaml`)
 
@@ -393,4 +442,3 @@ If monitor uses API key:
 - Monitor state engine: `monitor/src/services/monitorService.ts`
 - Monitor schema: `monitor/src/db/schema.ts`
 - Active config: `chief.yaml`
-

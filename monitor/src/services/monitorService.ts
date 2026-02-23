@@ -517,7 +517,7 @@ export class MonitorService {
       .orderBy(checkStates.jobName)
       .all();
 
-    return rows.map((row) => {
+    return rows.map((row: any) => {
       const latest = this.db
         .select({
           eventAt: telemetryEvents.eventAt,
@@ -554,7 +554,7 @@ export class MonitorService {
       .orderBy(desc(telemetryEvents.eventAt))
       .limit(100)
       .all()
-      .map((row) => ({ ...row, metadata: parseJson<Record<string, unknown>>(row.metadataJson, {}) }));
+      .map((row: any) => ({ ...row, metadata: parseJson<Record<string, unknown>>(row.metadataJson, {}) }));
 
     const openAlerts = this.db
       .select()
@@ -562,7 +562,7 @@ export class MonitorService {
       .where(and(eq(alerts.jobName, jobName), eq(alerts.status, "OPEN")))
       .orderBy(desc(alerts.openedAt))
       .all()
-      .map((row) => ({ ...row, details: parseJson<Record<string, unknown>>(row.detailsJson, {}) }));
+      .map((row: any) => ({ ...row, details: parseJson<Record<string, unknown>>(row.detailsJson, {}) }));
 
     return {
       check: check ?? null,
@@ -603,7 +603,7 @@ export class MonitorService {
       .offset(filters.offset);
 
     const rows = where ? query.where(where).all() : query.all();
-    return rows.map((row) => ({ ...row, details: parseJson<Record<string, unknown>>(row.detailsJson, {}) }));
+    return rows.map((row: any) => ({ ...row, details: parseJson<Record<string, unknown>>(row.detailsJson, {}) }));
   }
 
   listEvents(filters: {
@@ -646,7 +646,7 @@ export class MonitorService {
       .offset(filters.offset);
 
     const rows = where ? query.where(where).all() : query.all();
-    return rows.map((row) => ({ ...row, metadata: parseJson<Record<string, unknown>>(row.metadataJson, {}) }));
+    return rows.map((row: any) => ({ ...row, metadata: parseJson<Record<string, unknown>>(row.metadataJson, {}) }));
   }
 
   startBackgroundLoops(): Array<NodeJS.Timeout> {

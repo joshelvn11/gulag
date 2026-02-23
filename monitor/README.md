@@ -27,6 +27,44 @@ Default endpoint:
 
 - `http://127.0.0.1:7410`
 
+## Integrated Web UI
+
+The monitor now supports an integrated React dashboard served by the same Express service.
+
+### Local Development (two terminals)
+
+Terminal A (API):
+
+```bash
+cd monitor
+npm run dev
+```
+
+Terminal B (UI):
+
+```bash
+cd monitor
+npm run ui:install
+npm run ui:dev
+```
+
+Vite dev server runs on `http://127.0.0.1:5173` and proxies `/v1` to monitor API at `http://127.0.0.1:7410`.
+
+### Production Build + Serve
+
+```bash
+cd monitor
+npm run ui:build
+npm run build
+npm run start
+```
+
+After UI build, Express serves the dashboard at:
+
+- `http://127.0.0.1:7410/`
+
+If UI build output is missing, monitor runs in API-only mode and logs a startup warning.
+
 ## Chief Integration
 
 Enable telemetry in `chief.yaml`:

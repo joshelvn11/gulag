@@ -1,4 +1,8 @@
-import express, { Request, Response } from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import express, { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 
 import { loadConfig } from "./config.js";
@@ -44,6 +48,22 @@ function authenticate(req: Request, configuredApiKey: string): boolean {
   }
   const header = req.header("x-api-key") ?? "";
   return header === configuredApiKey;
+}
+
+function resolveUiDistPath(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(moduleDir, "../ui/dist"),
+    path.resolve(moduleDir, "../../ui/dist"),
+    path.resolve(process.cwd(), "ui/dist"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "index.html"))) {
+      return candidate;
+    }
+  }
+  return candidates[0];
 }
 
 function main(): void {
@@ -143,6 +163,24 @@ function main(): void {
 
     res.json({ events: rows, limit, offset });
   });
+
+  const uiDistPath = resolveUiDistPath();
+  const uiIndexPath = path.join(uiDistPath, "index.html");
+  if (fs.existsSync(uiIndexPath)) {
+    app.use(express.static(uiDistPath));
+
+    app.get("*", (req: Request, res: Response, next: NextFunction) => {
+      if (req.path.startsWith("/v1")) {
+        return next();
+      }
+      return res.sendFile(uiIndexPath);
+    });
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `Monitor UI build not found at ${uiDistPath}. Running API-only mode. Run \"npm run ui:build\" in monitor/.`
+    );
+  }
 
   const loops = service.startBackgroundLoops();
 
