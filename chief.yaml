@@ -1,0 +1,65 @@
+version: 1
+
+defaults:
+  working_dir: .
+  stop_on_failure: true
+  overlap: skip
+  timezone: UTC
+
+jobs:
+  - name: sample-etl-pipeline
+    enabled: true
+    overlap: skip
+    schedule:
+      frequency: interval
+      every: 5m
+    scripts:
+      - path: workers/sample/extract_demo.py
+        args:
+          - --source
+          - mock-orders-api
+          - --records
+          - "30"
+          - --seed
+          - "123"
+          - --output
+          - workers/sample/state/extracted_orders.json
+        timeout: 120
+
+      - path: workers/sample/transform_demo.py
+        args: --input workers/sample/state/extracted_orders.json --output workers/sample/state/transformed_orders.json --min-order-total 20
+        timeout: 120
+
+      - path: workers/sample/load_demo.py
+        args:
+          - --input
+          - workers/sample/state/transformed_orders.json
+          - --history-output
+          - workers/sample/state/load_history.jsonl
+          - --warehouse
+          - demo-local
+          - --table
+          - fact_sample_orders
+          - --fail-if-empty
+        timeout: 120
+
+  - name: sample-quality-check
+    enabled: true
+    overlap: queue
+    schedule:
+      frequency: interval
+      every: 8m
+    scripts:
+      - path: workers/sample/quality_check_demo.py
+        args:
+          - --transformed-file
+          - workers/sample/state/transformed_orders.json
+          - --history-file
+          - workers/sample/state/load_history.jsonl
+          - --max-age-hours
+          - "48"
+          - --min-records
+          - "1"
+          - --warn-average-below
+          - "30"
+        timeout: 60
