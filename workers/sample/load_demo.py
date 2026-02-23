@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from monitor_client import monitor
+except Exception:  # pragma: no cover - optional dependency path
+    monitor = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +39,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     input_path = Path(args.input)
+    if monitor:
+        monitor.info(
+            "load_demo started",
+            input=args.input,
+            warehouse=args.warehouse,
+            table=args.table,
+        )
     if not input_path.exists():
+        if monitor:
+            monitor.error("load_demo input missing", input=str(input_path))
         print(f"Error: transformed input file not found: {input_path}")
         return 1
     if args.sleep_seconds > 0:
@@ -38,6 +57,8 @@ def main() -> int:
     transformed = json.loads(input_path.read_text(encoding="utf-8"))
     records: List[Dict[str, object]] = transformed.get("records", [])
     if args.fail_if_empty and not records:
+        if monitor:
+            monitor.error("load_demo empty dataset", fail_if_empty=True)
         print("Error: transformed dataset is empty and --fail-if-empty is enabled.")
         return 2
 
@@ -56,6 +77,14 @@ def main() -> int:
     with history_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\n")
 
+    if monitor:
+        monitor.info(
+            "load_demo completed",
+            warehouse=args.warehouse,
+            table=args.table,
+            rows_loaded=event["rows_loaded"],
+            history=str(history_path),
+        )
     print(
         f"Load complete: warehouse={args.warehouse}, table={args.table}, "
         f"rows={event['rows_loaded']}, history={history_path}"

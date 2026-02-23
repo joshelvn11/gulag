@@ -4,3 +4,8 @@
 *.log
 /__pycache__/
 /workers/sample/state/
+/.pytest_cache/
+/.chief/
+/monitor/node_modules/
+/monitor/dist/
+/monitor/*.sqlite

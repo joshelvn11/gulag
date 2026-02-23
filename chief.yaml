@@ -6,13 +6,30 @@ defaults:
   overlap: skip
   timezone: UTC
 
+monitor:
+  enabled: true
+  endpoint: http://127.0.0.1:7410
+  api_key: ""
+  timeout_ms: 400
+  buffer:
+    max_events: 5000
+    flush_interval_ms: 1000
+    spool_file: .chief/telemetry_spool.jsonl
+
 jobs:
   - name: sample-etl-pipeline
     enabled: true
     overlap: skip
+    monitor:
+      enabled: true
+      check:
+        enabled: true
+        grace_seconds: 120
+        alert_on_failure: true
+        alert_on_miss: true
     schedule:
       frequency: interval
-      every: 5m
+      every: 1m
     scripts:
       - path: workers/sample/extract_demo.py
         args:
@@ -46,9 +63,16 @@ jobs:
   - name: sample-quality-check
     enabled: true
     overlap: queue
+    monitor:
+      enabled: true
+      check:
+        enabled: true
+        grace_seconds: 180
+        alert_on_failure: true
+        alert_on_miss: true
     schedule:
       frequency: interval
-      every: 8m
+      every: 2m
     scripts:
       - path: workers/sample/quality_check_demo.py
         args:

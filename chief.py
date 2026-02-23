@@ -8,6 +8,7 @@ YAML-driven orchestrator and scheduler for ETL scripts.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -17,11 +18,13 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
@@ -40,6 +43,11 @@ DEFAULT_CONFIG = "chief.yaml"
 DEFAULT_TIMEOUT_SECONDS = 3600
 DEFAULT_PREVIEW_COUNT = 5
 DEFAULT_POLL_SECONDS = 10
+DEFAULT_MONITOR_ENDPOINT = "http://127.0.0.1:7410"
+DEFAULT_MONITOR_TIMEOUT_MS = 400
+DEFAULT_MONITOR_BUFFER_MAX_EVENTS = 5000
+DEFAULT_MONITOR_BUFFER_FLUSH_MS = 1000
+DEFAULT_MONITOR_SPOOL_FILE = ".chief/telemetry_spool.jsonl"
 
 DAY_NAME_TO_CRON = {
     "sunday": 0,
@@ -134,6 +142,7 @@ class JobSpec:
     overlap: str
     scripts: List[ScriptSpec]
     schedule: ScheduleSpec
+    monitor: "JobMonitorSettings" = field(default_factory=lambda: JobMonitorSettings.default())
 
 
 @dataclass(frozen=True)
@@ -190,6 +199,267 @@ class JobState:
     next_fire: Optional[datetime]
     running_count: int = 0
     queued_pending: bool = False
+
+
+@dataclass(frozen=True)
+class MonitorBufferSettings:
+    max_events: int
+    flush_interval_ms: int
+    spool_file: Path
+
+
+@dataclass(frozen=True)
+class MonitorSettings:
+    enabled: bool
+    endpoint: str
+    api_key: str
+    timeout_ms: int
+    buffer: MonitorBufferSettings
+
+
+@dataclass(frozen=True)
+class MonitorCheckSettings:
+    enabled: bool
+    grace_seconds: int
+    alert_on_failure: bool
+    alert_on_miss: bool
+
+    @staticmethod
+    def default() -> "MonitorCheckSettings":
+        return MonitorCheckSettings(
+            enabled=True,
+            grace_seconds=120,
+            alert_on_failure=True,
+            alert_on_miss=True,
+        )
+
+
+@dataclass(frozen=True)
+class JobMonitorSettings:
+    enabled: bool
+    check: MonitorCheckSettings
+
+    @staticmethod
+    def default(enabled: bool = False) -> "JobMonitorSettings":
+        return JobMonitorSettings(
+            enabled=enabled,
+            check=MonitorCheckSettings(
+                enabled=enabled,
+                grace_seconds=120,
+                alert_on_failure=True,
+                alert_on_miss=True,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MonitorEvent:
+    source_type: str
+    event_type: str
+    level: str
+    message: str
+    event_at: datetime
+    job_name: Optional[str] = None
+    script_path: Optional[str] = None
+    run_id: Optional[str] = None
+    scheduled_for: Optional[datetime] = None
+    success: Optional[bool] = None
+    return_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "sourceType": self.source_type,
+            "eventType": self.event_type,
+            "level": self.level,
+            "message": self.message,
+            "eventAt": self.event_at.astimezone(UTC).isoformat(),
+            "metadata": self.metadata,
+        }
+        if self.job_name:
+            payload["jobName"] = self.job_name
+        if self.script_path:
+            payload["scriptPath"] = self.script_path
+        if self.run_id:
+            payload["runId"] = self.run_id
+        if self.scheduled_for:
+            payload["scheduledFor"] = self.scheduled_for.astimezone(UTC).isoformat()
+        if self.success is not None:
+            payload["success"] = self.success
+        if self.return_code is not None:
+            payload["returnCode"] = self.return_code
+        if self.duration_ms is not None:
+            payload["durationMs"] = self.duration_ms
+        return payload
+
+
+class MonitorEmitter:
+    """Best-effort, non-blocking monitor event emitter."""
+
+    def __init__(self, settings: MonitorSettings):
+        self.settings = settings
+        self._queue: "Queue[MonitorEvent]" = Queue(maxsize=settings.buffer.max_events)
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._dropped_events = 0
+        self._warned_disabled = False
+
+        if self.settings.enabled:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="chief-monitor-emitter")
+            self._thread.start()
+
+    def emit(self, event: MonitorEvent) -> None:
+        if not self.settings.enabled:
+            if not self._warned_disabled:
+                logger.info("Monitor emitter disabled; telemetry events will not be sent.")
+                self._warned_disabled = True
+            return
+
+        try:
+            self._queue.put_nowait(event)
+        except Exception:
+            self._dropped_events += 1
+            logger.warning(
+                "Monitor emitter queue is full; dropping telemetry event (dropped=%s).",
+                self._dropped_events,
+            )
+
+    def close(self, timeout_seconds: float = 2.0) -> None:
+        if not self.settings.enabled:
+            return
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout_seconds)
+        # Final best-effort flush.
+        batch = self._collect_batch(limit=10000)
+        if batch:
+            if not self._send_batch(batch):
+                self._spool_payloads(batch)
+        self._replay_spool(limit=1000)
+
+    def _run(self) -> None:
+        interval = max(0.05, self.settings.buffer.flush_interval_ms / 1000.0)
+        while not self._stop_event.is_set():
+            try:
+                batch = self._collect_batch(limit=250)
+                if batch:
+                    if not self._send_batch(batch):
+                        self._spool_payloads(batch)
+                self._replay_spool(limit=250)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Monitor emitter loop error: %s", str(exc))
+            self._stop_event.wait(interval)
+
+    def _collect_batch(self, limit: int) -> List[Dict[str, Any]]:
+        payloads: List[Dict[str, Any]] = []
+        for _ in range(limit):
+            try:
+                event = self._queue.get_nowait()
+            except Empty:
+                break
+            payloads.append(event.to_payload())
+        return payloads
+
+    def _send_batch(self, payloads: List[Dict[str, Any]]) -> bool:
+        if not payloads:
+            return True
+        body = json.dumps({"events": payloads}).encode("utf-8")
+        url = self.settings.endpoint.rstrip("/") + "/v1/events/batch"
+        headers = {"Content-Type": "application/json"}
+        if self.settings.api_key:
+            headers["x-api-key"] = self.settings.api_key
+        req = urllib_request.Request(url=url, data=body, method="POST", headers=headers)
+        try:
+            with urllib_request.urlopen(req, timeout=max(0.1, self.settings.timeout_ms / 1000.0)) as response:
+                return 200 <= response.status < 300
+        except urllib_error.URLError as exc:
+            logger.warning("Monitor emitter failed to send batch: %s", str(exc))
+            return False
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Monitor emitter unexpected failure: %s", str(exc))
+            return False
+
+    def _spool_payloads(self, payloads: List[Dict[str, Any]]) -> None:
+        if not payloads:
+            return
+        try:
+            spool_path = self.settings.buffer.spool_file
+            spool_path.parent.mkdir(parents=True, exist_ok=True)
+            with spool_path.open("a", encoding="utf-8") as handle:
+                for payload in payloads:
+                    handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Monitor emitter failed to spool events: %s", str(exc))
+
+    def _replay_spool(self, limit: int) -> None:
+        try:
+            spool_path = self.settings.buffer.spool_file
+            if not spool_path.exists():
+                return
+
+            lines = spool_path.read_text(encoding="utf-8").splitlines()
+            if not lines:
+                return
+
+            replayable = lines[:limit]
+            remaining = lines[limit:]
+            payloads: List[Dict[str, Any]] = []
+            for line in replayable:
+                try:
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        payloads.append(payload)
+                except Exception:
+                    continue
+
+            if not payloads:
+                spool_path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
+                return
+
+            if self._send_batch(payloads):
+                spool_path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Monitor emitter failed to replay spool: %s", str(exc))
+
+
+def monitor_check_metadata(job_monitor: JobMonitorSettings) -> Dict[str, Any]:
+    return {
+        "check_enabled": job_monitor.check.enabled,
+        "grace_seconds": job_monitor.check.grace_seconds,
+        "alert_on_failure": job_monitor.check.alert_on_failure,
+        "alert_on_miss": job_monitor.check.alert_on_miss,
+    }
+
+
+def emit_monitor_event(emitter: Optional[MonitorEmitter], event: MonitorEvent) -> None:
+    if emitter is None:
+        return
+    try:
+        emitter.emit(event)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Monitor emitter failed to enqueue event: %s", str(exc))
+
+
+def build_monitor_env(
+    script: ScriptSpec,
+    spec: JobSpec,
+    run_id: str,
+    scheduled_for: Optional[datetime],
+    monitor_settings: Optional[MonitorSettings],
+) -> Dict[str, str]:
+    env: Dict[str, str] = {
+        "CHIEF_RUN_ID": run_id,
+        "CHIEF_JOB_NAME": spec.name,
+        "CHIEF_SCRIPT_PATH": str(script.resolved_path),
+    }
+    if scheduled_for is not None:
+        env["CHIEF_SCHEDULED_FOR"] = scheduled_for.astimezone(UTC).isoformat()
+    if monitor_settings and monitor_settings.enabled:
+        env["CHIEF_MONITOR_ENDPOINT"] = monitor_settings.endpoint
+        if monitor_settings.api_key:
+            env["CHIEF_MONITOR_API_KEY"] = monitor_settings.api_key
+    return env
 
 
 def require_yaml_dependency() -> None:
@@ -478,7 +748,7 @@ def _validate_range_or_single(token: str, field_path: str, min_value: int, max_v
         raise ConfigError(f'Error: Value "{value}" out of bounds {min_value}-{max_value} at {field_path}.')
 
 
-def parse_config(config_path: Path) -> List[JobSpec]:
+def _load_config_payload(config_path: Path) -> Dict[str, Any]:
     require_yaml_dependency()
     if not config_path.exists():
         raise ConfigError(f"Error: Config file not found: {config_path}")
@@ -490,8 +760,150 @@ def parse_config(config_path: Path) -> List[JobSpec]:
 
     if not isinstance(payload, dict):
         raise ConfigError("Error: Top-level config must be a mapping.")
+    return payload
 
-    unknown_top = set(payload.keys()) - {"version", "defaults", "jobs"}
+
+def parse_monitor_settings(
+    raw: Any,
+    config_dir: Path,
+    field_path: str = "monitor",
+) -> MonitorSettings:
+    default_spool = (config_dir / DEFAULT_MONITOR_SPOOL_FILE).resolve()
+    if raw is None:
+        return MonitorSettings(
+            enabled=False,
+            endpoint=DEFAULT_MONITOR_ENDPOINT,
+            api_key="",
+            timeout_ms=DEFAULT_MONITOR_TIMEOUT_MS,
+            buffer=MonitorBufferSettings(
+                max_events=DEFAULT_MONITOR_BUFFER_MAX_EVENTS,
+                flush_interval_ms=DEFAULT_MONITOR_BUFFER_FLUSH_MS,
+                spool_file=default_spool,
+            ),
+        )
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Error: {field_path} must be a mapping.")
+
+    unknown = set(raw.keys()) - {"enabled", "endpoint", "api_key", "timeout_ms", "buffer"}
+    if unknown:
+        raise ConfigError(f"Error: Unknown keys in {field_path}: {sorted(unknown)}.")
+
+    enabled = ensure_bool(raw.get("enabled"), f"{field_path}.enabled", False)
+    endpoint = ensure_str(raw.get("endpoint", DEFAULT_MONITOR_ENDPOINT), f"{field_path}.endpoint")
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        raise ConfigError(f"Error: {field_path}.endpoint must be an HTTP URL.")
+    api_key_raw = raw.get("api_key", "")
+    if not isinstance(api_key_raw, str):
+        raise ConfigError(f"Error: {field_path}.api_key must be a string.")
+    timeout_ms = ensure_int(raw.get("timeout_ms"), f"{field_path}.timeout_ms", DEFAULT_MONITOR_TIMEOUT_MS, 1)
+
+    buffer_raw = raw.get("buffer", {}) or {}
+    if not isinstance(buffer_raw, dict):
+        raise ConfigError(f"Error: {field_path}.buffer must be a mapping.")
+    buffer_unknown = set(buffer_raw.keys()) - {"max_events", "flush_interval_ms", "spool_file"}
+    if buffer_unknown:
+        raise ConfigError(f"Error: Unknown keys in {field_path}.buffer: {sorted(buffer_unknown)}.")
+    max_events = ensure_int(
+        buffer_raw.get("max_events"),
+        f"{field_path}.buffer.max_events",
+        DEFAULT_MONITOR_BUFFER_MAX_EVENTS,
+        1,
+    )
+    flush_interval_ms = ensure_int(
+        buffer_raw.get("flush_interval_ms"),
+        f"{field_path}.buffer.flush_interval_ms",
+        DEFAULT_MONITOR_BUFFER_FLUSH_MS,
+        1,
+    )
+    spool_raw = buffer_raw.get("spool_file", DEFAULT_MONITOR_SPOOL_FILE)
+    if not isinstance(spool_raw, str) or not spool_raw.strip():
+        raise ConfigError(f"Error: {field_path}.buffer.spool_file must be a non-empty path string.")
+    spool_path = Path(spool_raw.strip())
+    if not spool_path.is_absolute():
+        spool_path = (config_dir / spool_path).resolve()
+
+    return MonitorSettings(
+        enabled=enabled,
+        endpoint=endpoint,
+        api_key=api_key_raw,
+        timeout_ms=timeout_ms,
+        buffer=MonitorBufferSettings(
+            max_events=max_events,
+            flush_interval_ms=flush_interval_ms,
+            spool_file=spool_path,
+        ),
+    )
+
+
+def parse_job_monitor_settings(
+    raw: Any,
+    field_path: str,
+    global_settings: MonitorSettings,
+) -> JobMonitorSettings:
+    if raw is None:
+        return JobMonitorSettings.default(enabled=global_settings.enabled)
+
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Error: {field_path} must be a mapping.")
+    unknown = set(raw.keys()) - {"enabled", "check"}
+    if unknown:
+        raise ConfigError(f"Error: Unknown keys in {field_path}: {sorted(unknown)}.")
+
+    enabled = ensure_bool(raw.get("enabled"), f"{field_path}.enabled", global_settings.enabled)
+
+    check_raw = raw.get("check", {}) or {}
+    if not isinstance(check_raw, dict):
+        raise ConfigError(f"Error: {field_path}.check must be a mapping.")
+    check_unknown = set(check_raw.keys()) - {"enabled", "grace_seconds", "alert_on_failure", "alert_on_miss"}
+    if check_unknown:
+        raise ConfigError(f"Error: Unknown keys in {field_path}.check: {sorted(check_unknown)}.")
+
+    check_enabled = ensure_bool(check_raw.get("enabled"), f"{field_path}.check.enabled", enabled)
+    grace_seconds = ensure_int(check_raw.get("grace_seconds"), f"{field_path}.check.grace_seconds", 120, 0)
+    alert_on_failure = ensure_bool(
+        check_raw.get("alert_on_failure"),
+        f"{field_path}.check.alert_on_failure",
+        True,
+    )
+    alert_on_miss = ensure_bool(
+        check_raw.get("alert_on_miss"),
+        f"{field_path}.check.alert_on_miss",
+        True,
+    )
+
+    return JobMonitorSettings(
+        enabled=enabled,
+        check=MonitorCheckSettings(
+            enabled=check_enabled,
+            grace_seconds=grace_seconds,
+            alert_on_failure=alert_on_failure,
+            alert_on_miss=alert_on_miss,
+        ),
+    )
+
+
+def parse_monitor_settings_from_file(config_path: Path) -> MonitorSettings:
+    payload = _load_config_payload(config_path)
+    return parse_monitor_settings(payload.get("monitor"), config_path.parent, "monitor")
+
+
+def effective_monitor_settings(settings: MonitorSettings, runtimes: List[JobRuntime]) -> MonitorSettings:
+    should_enable = settings.enabled or any(runtime.spec.monitor.enabled for runtime in runtimes)
+    if should_enable == settings.enabled:
+        return settings
+    return MonitorSettings(
+        enabled=should_enable,
+        endpoint=settings.endpoint,
+        api_key=settings.api_key,
+        timeout_ms=settings.timeout_ms,
+        buffer=settings.buffer,
+    )
+
+
+def parse_config(config_path: Path) -> List[JobSpec]:
+    payload = _load_config_payload(config_path)
+
+    unknown_top = set(payload.keys()) - {"version", "defaults", "jobs", "monitor"}
     if unknown_top:
         raise ConfigError(f"Error: Unknown top-level keys: {sorted(unknown_top)}.")
 
@@ -509,6 +921,7 @@ def parse_config(config_path: Path) -> List[JobSpec]:
     default_working_dir = _resolve_working_dir(default_working_dir_raw, config_path.parent, "defaults.working_dir")
     default_stop_on_failure = ensure_bool(defaults.get("stop_on_failure"), "defaults.stop_on_failure", True)
     default_overlap = parse_overlap(defaults.get("overlap"), "defaults.overlap", "skip")
+    monitor_settings = parse_monitor_settings(payload.get("monitor"), config_path.parent, "monitor")
 
     jobs_raw = payload.get("jobs")
     if not isinstance(jobs_raw, list) or not jobs_raw:
@@ -530,6 +943,7 @@ def parse_config(config_path: Path) -> List[JobSpec]:
             "overlap",
             "schedule",
             "scripts",
+            "monitor",
         }
         if unknown_job:
             raise ConfigError(f"Error: Unknown keys in {path}: {sorted(unknown_job)}.")
@@ -555,6 +969,7 @@ def parse_config(config_path: Path) -> List[JobSpec]:
             default_timezone_name,
         )
         scripts = parse_scripts(job_raw.get("scripts"), f"{path}.scripts", working_dir)
+        monitor = parse_job_monitor_settings(job_raw.get("monitor"), f"{path}.monitor", monitor_settings)
 
         jobs.append(
             JobSpec(
@@ -565,6 +980,7 @@ def parse_config(config_path: Path) -> List[JobSpec]:
                 overlap=overlap,
                 scripts=scripts,
                 schedule=schedule,
+                monitor=monitor,
             )
         )
 
@@ -1039,9 +1455,16 @@ def is_due_now(runtime: JobRuntime, at_utc: Optional[datetime] = None) -> bool:
     return bool(croniter.match(compiled.cron_expr, local))
 
 
-def run_script(script: ScriptSpec, working_dir: Path) -> ScriptRunResult:
+def run_script(
+    script: ScriptSpec,
+    working_dir: Path,
+    env_overrides: Optional[Dict[str, str]] = None,
+) -> ScriptRunResult:
     command = [sys.executable, str(script.resolved_path), *script.args]
     started = datetime.now(tz=UTC)
+    env = os.environ.copy()
+    if env_overrides:
+        env.update({k: v for k, v in env_overrides.items() if v is not None})
     try:
         result = subprocess.run(
             command,
@@ -1050,6 +1473,7 @@ def run_script(script: ScriptSpec, working_dir: Path) -> ScriptRunResult:
             text=True,
             timeout=script.timeout,
             check=False,
+            env=env,
         )
         duration = (datetime.now(tz=UTC) - started).total_seconds()
         return ScriptRunResult(
@@ -1057,8 +1481,8 @@ def run_script(script: ScriptSpec, working_dir: Path) -> ScriptRunResult:
             success=result.returncode == 0,
             return_code=result.returncode,
             duration_seconds=duration,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
         )
     except subprocess.TimeoutExpired:
         duration = (datetime.now(tz=UTC) - started).total_seconds()
@@ -1084,10 +1508,17 @@ def run_script(script: ScriptSpec, working_dir: Path) -> ScriptRunResult:
         )
 
 
-def run_job(runtime: JobRuntime, scheduled_for: Optional[datetime] = None) -> JobRunResult:
+def run_job(
+    runtime: JobRuntime,
+    scheduled_for: Optional[datetime] = None,
+    monitor_emitter: Optional[MonitorEmitter] = None,
+) -> JobRunResult:
     spec = runtime.spec
     started = datetime.now(tz=UTC)
-    run_id = f"{spec.name}:{started.strftime('%Y%m%d%H%M%S')}"
+    run_id = f"{spec.name}:{started.strftime('%Y%m%d%H%M%S')}-{started.microsecond:06d}-{os.getpid()}"
+    job_monitor_emitter = monitor_emitter if (monitor_emitter and spec.monitor.enabled) else None
+    monitor_settings = job_monitor_emitter.settings if job_monitor_emitter else None
+    check_meta = monitor_check_metadata(spec.monitor)
     if scheduled_for:
         logger.info(
             "[%s] Starting job %s (scheduled_for=%s)",
@@ -1098,13 +1529,91 @@ def run_job(runtime: JobRuntime, scheduled_for: Optional[datetime] = None) -> Jo
     else:
         logger.info("[%s] Starting job %s", run_id, spec.name)
 
+    emit_monitor_event(
+        job_monitor_emitter,
+        MonitorEvent(
+            source_type="chief",
+            event_type="job.started",
+            level="INFO",
+            message=f"Job {spec.name} started.",
+            event_at=started,
+            job_name=spec.name,
+            run_id=run_id,
+            scheduled_for=scheduled_for,
+            metadata={
+                "overlap": spec.overlap,
+                "script_count": len(spec.scripts),
+                **check_meta,
+            },
+        ),
+    )
+
     script_results: List[ScriptRunResult] = []
     for idx, script in enumerate(spec.scripts, start=1):
         logger.info("[%s] [%s/%s] Running %s", run_id, idx, len(spec.scripts), script.path)
         if script.args:
             logger.info("[%s] Args: %s", run_id, " ".join(shlex.quote(arg) for arg in script.args))
-        result = run_script(script, spec.working_dir)
+        emit_monitor_event(
+            job_monitor_emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="script.started",
+                level="INFO",
+                message=f"Script started: {script.path}",
+                event_at=datetime.now(tz=UTC),
+                job_name=spec.name,
+                script_path=str(script.resolved_path),
+                run_id=run_id,
+                scheduled_for=scheduled_for,
+                metadata={
+                    "script_index": idx,
+                    "script_total": len(spec.scripts),
+                    "args": list(script.args),
+                    "timeout_seconds": script.timeout,
+                },
+            ),
+        )
+
+        script_env = build_monitor_env(
+            script=script,
+            spec=spec,
+            run_id=run_id,
+            scheduled_for=scheduled_for,
+            monitor_settings=monitor_settings,
+        )
+        result = run_script(script, spec.working_dir, env_overrides=script_env)
         script_results.append(result)
+
+        script_level = "INFO" if result.success else "ERROR"
+        stdout_preview = result.stdout.strip()[:1000]
+        stderr_preview = result.stderr.strip()[:1000]
+        emit_monitor_event(
+            job_monitor_emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="script.completed",
+                level=script_level,
+                message=(
+                    f"Script completed: {script.path}"
+                    if result.success
+                    else f"Script failed: {script.path} (code={result.return_code})"
+                ),
+                event_at=datetime.now(tz=UTC),
+                job_name=spec.name,
+                script_path=str(script.resolved_path),
+                run_id=run_id,
+                scheduled_for=scheduled_for,
+                success=result.success,
+                return_code=result.return_code,
+                duration_ms=int(result.duration_seconds * 1000),
+                metadata={
+                    "error": result.error,
+                    "stdout_preview": stdout_preview,
+                    "stderr_preview": stderr_preview,
+                },
+            ),
+        )
+
         if result.success:
             logger.info(
                 "[%s] Script succeeded: %s (%.2fs)",
@@ -1128,6 +1637,36 @@ def run_job(runtime: JobRuntime, scheduled_for: Optional[datetime] = None) -> Jo
 
     ended = datetime.now(tz=UTC)
     success = all(result.success for result in script_results)
+    completed_event_type = "job.completed" if success else "job.failed"
+    completed_level = "INFO" if success else "ERROR"
+    failed_script = next((result.script.path for result in script_results if not result.success), None)
+    emit_monitor_event(
+        job_monitor_emitter,
+        MonitorEvent(
+            source_type="chief",
+            event_type=completed_event_type,
+            level=completed_level,
+            message=(
+                f"Job {spec.name} completed successfully."
+                if success
+                else f"Job {spec.name} failed."
+            ),
+            event_at=ended,
+            job_name=spec.name,
+            run_id=run_id,
+            scheduled_for=scheduled_for,
+            success=success,
+            duration_ms=int((ended - started).total_seconds() * 1000),
+            metadata={
+                "scripts_executed": len(script_results),
+                "scripts_total": len(spec.scripts),
+                "stop_on_failure": spec.stop_on_failure,
+                "failed_script": failed_script,
+                **check_meta,
+            },
+        ),
+    )
+
     logger.info(
         "[%s] Job %s completed with success=%s in %.2fs",
         run_id,
@@ -1137,6 +1676,7 @@ def run_job(runtime: JobRuntime, scheduled_for: Optional[datetime] = None) -> Jo
     )
     try:
         next_run_utc = next_run_after(runtime.compiled, ended)
+        next_run_iso = next_run_utc.astimezone(UTC).isoformat() if next_run_utc is not None else None
         if next_run_utc is None:
             logger.info(
                 "[%s] Next scheduled run for %s: none (outside bounds/exclusions or schedule ended)",
@@ -1152,12 +1692,51 @@ def run_job(runtime: JobRuntime, scheduled_for: Optional[datetime] = None) -> Jo
                 next_local.isoformat(),
                 runtime.compiled.timezone_name,
             )
+        emit_monitor_event(
+            job_monitor_emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="job.next_scheduled",
+                level="INFO",
+                message=(
+                    f"Next run for {spec.name}: {next_run_iso}"
+                    if next_run_iso
+                    else f"Next run for {spec.name}: none"
+                ),
+                event_at=datetime.now(tz=UTC),
+                job_name=spec.name,
+                run_id=run_id,
+                scheduled_for=scheduled_for,
+                metadata={
+                    "next_run_at": next_run_iso,
+                    **check_meta,
+                },
+            ),
+        )
     except ChiefError as exc:
         logger.warning(
             "[%s] Unable to compute next scheduled run for %s: %s",
             run_id,
             spec.name,
             str(exc),
+        )
+        emit_monitor_event(
+            job_monitor_emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="job.next_scheduled",
+                level="WARN",
+                message=f"Unable to compute next run for {spec.name}: {str(exc)}",
+                event_at=datetime.now(tz=UTC),
+                job_name=spec.name,
+                run_id=run_id,
+                scheduled_for=scheduled_for,
+                metadata={
+                    "next_run_at": None,
+                    "error": str(exc),
+                    **check_meta,
+                },
+            ),
         )
 
     return JobRunResult(
@@ -1244,16 +1823,24 @@ def command_run(config_path: Path, job_name: Optional[str], respect_schedule: bo
     jobs = parse_config(config_path)
     runtimes = compile_jobs(jobs)
     selected = filter_jobs(runtimes, job_name, include_disabled=False)
+    monitor_settings = effective_monitor_settings(
+        parse_monitor_settings_from_file(config_path),
+        selected,
+    )
+    monitor_emitter = MonitorEmitter(monitor_settings)
 
     exit_code = 0
     now = datetime.now(tz=UTC)
-    for runtime in selected:
-        if respect_schedule and not is_due_now(runtime, at_utc=now):
-            logger.info("Skipping %s: not due now.", runtime.spec.name)
-            continue
-        result = run_job(runtime)
-        if not result.success:
-            exit_code = 1
+    try:
+        for runtime in selected:
+            if respect_schedule and not is_due_now(runtime, at_utc=now):
+                logger.info("Skipping %s: not due now.", runtime.spec.name)
+                continue
+            result = run_job(runtime, monitor_emitter=monitor_emitter)
+            if not result.success:
+                exit_code = 1
+    finally:
+        monitor_emitter.close()
     return exit_code
 
 
@@ -1293,6 +1880,11 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
     selected = filter_jobs(runtimes, job_name=None, include_disabled=False)
     selected_by_name = {runtime.spec.name: runtime for runtime in selected}
     ordered_names = [runtime.spec.name for runtime in selected]
+    monitor_settings = effective_monitor_settings(
+        parse_monitor_settings_from_file(config_path),
+        selected,
+    )
+    monitor_emitter = MonitorEmitter(monitor_settings)
 
     now = datetime.now(tz=UTC)
     states: Dict[str, JobState] = {}
@@ -1306,15 +1898,37 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
     def launch(job_runtime: JobRuntime, scheduled_for: datetime) -> None:
         state = states[job_runtime.spec.name]
         state.running_count += 1
+        job_emitter = monitor_emitter if job_runtime.spec.monitor.enabled else None
         logger.info(
             "Dispatching %s (overlap=%s, running=%s)",
             job_runtime.spec.name,
             job_runtime.spec.overlap,
             state.running_count,
         )
+        emit_monitor_event(
+            job_emitter,
+            MonitorEvent(
+                source_type="chief",
+                event_type="daemon.dispatch",
+                level="INFO",
+                message=f"Dispatching {job_runtime.spec.name}.",
+                event_at=datetime.now(tz=UTC),
+                job_name=job_runtime.spec.name,
+                scheduled_for=scheduled_for,
+                metadata={
+                    "overlap": job_runtime.spec.overlap,
+                    "running_count": state.running_count,
+                    **monitor_check_metadata(job_runtime.spec.monitor),
+                },
+            ),
+        )
 
         def worker() -> None:
-            result = run_job(job_runtime, scheduled_for=scheduled_for)
+            result = run_job(
+                job_runtime,
+                scheduled_for=scheduled_for,
+                monitor_emitter=monitor_emitter,
+            )
             completion_queue.put((job_runtime.spec.name, result))
 
         thread = threading.Thread(target=worker, daemon=True)
@@ -1347,6 +1961,19 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
                     state.queued_pending = False
                     trigger_queue.appendleft(TriggerEvent(job_name=name, scheduled_for=now))
                     logger.info("Enqueued queued-pending run for %s", name)
+                    emit_monitor_event(
+                        monitor_emitter if selected_by_name[name].spec.monitor.enabled else None,
+                        MonitorEvent(
+                            source_type="chief",
+                            event_type="daemon.queued_pending",
+                            level="INFO",
+                            message=f"Queued pending run for {name}.",
+                            event_at=now,
+                            job_name=name,
+                            scheduled_for=now,
+                            metadata={"reason": "prior run completed"},
+                        ),
+                    )
                 if active_job_name == name and state.running_count == 0:
                     active_job_name = None
 
@@ -1376,6 +2003,19 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
                                 runtime.spec.name,
                                 trigger.scheduled_for.isoformat(),
                             )
+                            emit_monitor_event(
+                                monitor_emitter if runtime.spec.monitor.enabled else None,
+                                MonitorEvent(
+                                    source_type="chief",
+                                    event_type="daemon.overlap_skipped",
+                                    level="INFO",
+                                    message=f"Skipped overlapping trigger for {runtime.spec.name}.",
+                                    event_at=now,
+                                    job_name=runtime.spec.name,
+                                    scheduled_for=trigger.scheduled_for,
+                                    metadata={"overlap": overlap},
+                                ),
+                            )
                             _remove_trigger_index(trigger_queue, idx)
                             made_progress = True
                             break
@@ -1385,6 +2025,19 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
                                 logger.info(
                                     "Queueing one pending run for %s",
                                     runtime.spec.name,
+                                )
+                                emit_monitor_event(
+                                    monitor_emitter if runtime.spec.monitor.enabled else None,
+                                    MonitorEvent(
+                                        source_type="chief",
+                                        event_type="daemon.queued_pending",
+                                        level="INFO",
+                                        message=f"Queued overlapping trigger for {runtime.spec.name}.",
+                                        event_at=now,
+                                        job_name=runtime.spec.name,
+                                        scheduled_for=trigger.scheduled_for,
+                                        metadata={"overlap": overlap},
+                                    ),
                                 )
                             _remove_trigger_index(trigger_queue, idx)
                             made_progress = True
@@ -1411,6 +2064,8 @@ def command_daemon(config_path: Path, poll_seconds: int) -> int:
     except KeyboardInterrupt:
         logger.info("Daemon interrupted by user.")
         return 130
+    finally:
+        monitor_emitter.close()
 
 
 def _remove_trigger_index(queue_obj: deque[TriggerEvent], index: int) -> None:

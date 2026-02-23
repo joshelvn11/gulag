@@ -10,10 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from monitor_client import monitor
+except Exception:  # pragma: no cover - optional dependency path
+    monitor = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,7 +61,16 @@ def generate_records(records: int, seed: int) -> List[Dict[str, object]]:
 
 def main() -> int:
     args = parse_args()
+    if monitor:
+        monitor.info(
+            "extract_demo started",
+            source=args.source,
+            records=args.records,
+            output=args.output,
+        )
     if args.records <= 0:
+        if monitor:
+            monitor.error("extract_demo invalid record count", records=args.records)
         print("Error: --records must be >= 1")
         return 1
     if args.sleep_seconds > 0:
@@ -69,6 +88,13 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    if monitor:
+        monitor.info(
+            "extract_demo completed",
+            source=args.source,
+            record_count=args.records,
+            output=str(output_path),
+        )
     print(
         f"Extract complete: source={args.source}, records={args.records}, output={output_path}"
     )

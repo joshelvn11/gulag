@@ -14,13 +14,15 @@ It provides:
 - schedule preview with next run times
 - daemon scheduling mode
 - cron export for cron-compatible schedules
+- monitor telemetry emission to a local monitor service (optional)
 
 ## File Locations
 
 - Runner: `chief.py`
 - Default config: `chief.yaml`
 - Runtime log file: `chief.log`
-- Legacy wrapper: `script_runner.py` (deprecated)
+- Worker monitor client: `monitor_client.py`
+- Monitor service project: `monitor/`
 
 ## Requirements
 
@@ -73,6 +75,14 @@ python chief.py daemon --config chief.yaml --poll-seconds 10
 
 ```bash
 python chief.py export-cron --config chief.yaml
+```
+
+6. Start the monitor service (optional observability API):
+
+```bash
+cd monitor
+npm install
+npm run dev
 ```
 
 ## CLI Commands
@@ -236,12 +246,28 @@ defaults:
   stop_on_failure: true
   overlap: skip
   timezone: UTC
+monitor:
+  enabled: true
+  endpoint: http://127.0.0.1:7410
+  api_key: ""
+  timeout_ms: 400
+  buffer:
+    max_events: 5000
+    flush_interval_ms: 1000
+    spool_file: .chief/telemetry_spool.jsonl
 jobs:
   - name: example-job
     enabled: true
     working_dir: .
     stop_on_failure: true
     overlap: skip
+    monitor:
+      enabled: true
+      check:
+        enabled: true
+        grace_seconds: 120
+        alert_on_failure: true
+        alert_on_miss: true
     schedule:
       frequency: daily
       time: "06:00"
@@ -255,6 +281,7 @@ jobs:
 
 - `version`: config version (current usage: `1`)
 - `defaults`: optional defaults applied to jobs
+- `monitor`: optional monitor emitter settings for telemetry
 - `jobs`: required non-empty list of job definitions
 
 ## `defaults` Keys
@@ -273,6 +300,7 @@ jobs:
 - `overlap` (optional, inherits default)
 - `schedule` (required)
 - `scripts` (required, non-empty)
+- `monitor` (optional, per-job telemetry/check settings)
 
 ## Script Keys
 
@@ -302,6 +330,31 @@ Notes:
 
 - relative `path` values resolve against the job `working_dir`
 - script path existence is validated at load time
+
+## Monitor Configuration
+
+Chief can emit lifecycle telemetry events to a local monitor service over HTTP.
+
+Top-level monitor block:
+
+- `enabled` (default `false`)
+- `endpoint` (must start with `http://` or `https://`)
+- `api_key` (optional; sent as `x-api-key`)
+- `timeout_ms` (> 0)
+- `buffer.max_events` (> 0)
+- `buffer.flush_interval_ms` (> 0)
+- `buffer.spool_file` (local fallback JSONL path)
+
+Per-job monitor block:
+
+- `enabled` (inherits top-level monitor `enabled`)
+- `check.enabled`
+- `check.grace_seconds` (>= 0)
+- `check.alert_on_failure`
+- `check.alert_on_miss`
+
+Telemetry is best-effort and never blocks job execution.
+If the endpoint is unavailable, events are queued/spooled and Chief logs warnings.
 
 ## Scheduling DSL
 
@@ -523,6 +576,39 @@ Chief compiles each schedule into one of:
   - `queue`: allow one queued pending run
   - `parallel`: allow same-job concurrent runs only; other jobs stay globally sequential
 
+## Telemetry Event Model
+
+Chief emits these event types:
+
+- `job.started`
+- `script.started`
+- `script.completed`
+- `job.completed`
+- `job.failed`
+- `job.next_scheduled`
+- `daemon.dispatch`
+- `daemon.overlap_skipped`
+- `daemon.queued_pending`
+
+Worker scripts can emit custom events as:
+
+- `worker.message`
+
+Standard event levels:
+
+- `DEBUG`
+- `INFO`
+- `WARN`
+- `ERROR`
+- `CRITICAL`
+
+Correlation fields included when available:
+
+- `run_id`
+- `job_name`
+- `script_path`
+- `scheduled_for`
+
 ## Timezone and DST
 
 - schedule evaluation is timezone-aware
@@ -623,6 +709,37 @@ jobs:
         timeout: 600
 ```
 
+## Worker Instrumentation (`monitor_client.py`)
+
+Chief injects monitor context env vars into worker subprocesses:
+
+- `CHIEF_MONITOR_ENDPOINT`
+- `CHIEF_MONITOR_API_KEY`
+- `CHIEF_RUN_ID`
+- `CHIEF_JOB_NAME`
+- `CHIEF_SCRIPT_PATH`
+- `CHIEF_SCHEDULED_FOR`
+
+Use the helper in worker scripts:
+
+```python
+from monitor_client import monitor
+
+monitor.info("extract started", source="api-x")
+monitor.warn("high latency", duration_ms=1800)
+monitor.error("load failed", table="fact_orders", reason="constraint violation")
+```
+
+Helper methods:
+
+- `monitor.debug(message, **meta)`
+- `monitor.info(message, **meta)`
+- `monitor.warn(message, **meta)`
+- `monitor.error(message, **meta)`
+- `monitor.critical(message, **meta)`
+
+If endpoint config is missing/unavailable, helper calls no-op gracefully.
+
 ## Testing Chief
 
 Run tests with pytest (from repo root):
@@ -635,7 +752,6 @@ Do not run pytest files directly with `python tests/test_chief.py`.
 
 ## Migration Notes
 
-- `script_runner.py` is a compatibility wrapper and is deprecated.
 - Use `chief.py` + `chief.yaml` as the primary workflow.
 
 ## Troubleshooting
@@ -664,7 +780,30 @@ Use `preview` to inspect next run times:
 python chief.py preview --job <job-name>
 ```
 
+## Monitor warnings in `chief.log`
+
+If you see warnings like `Monitor emitter failed to send batch`, Chief is still running jobs.
+This means monitor delivery is temporarily unavailable.
+
+Checklist:
+
+1. Start monitor service:
+
+```bash
+cd monitor
+npm install
+npm run dev
+```
+
+2. Confirm health endpoint:
+
+```bash
+curl -s http://127.0.0.1:7410/v1/health
+```
+
+3. Verify `monitor.endpoint` and optional `monitor.api_key` in `chief.yaml`.
+
 ## See Also
 
 - `chief.yaml` for live configuration examples
-- `script_runner.md` for migration-oriented notes
+- `monitor/README.md` for monitor API and local setup

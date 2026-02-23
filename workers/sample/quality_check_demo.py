@@ -9,9 +9,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from monitor_client import monitor
+except Exception:  # pragma: no cover - optional dependency path
+    monitor = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,8 +47,16 @@ def main() -> int:
     args = parse_args()
     transformed_path = Path(args.transformed_file)
     history_path = Path(args.history_file)
+    if monitor:
+        monitor.info(
+            "quality_check_demo started",
+            transformed_file=args.transformed_file,
+            history_file=args.history_file,
+        )
 
     if not transformed_path.exists():
+        if monitor:
+            monitor.error("quality_check_demo transformed file missing", transformed_file=str(transformed_path))
         print(f"Error: transformed file not found: {transformed_path}")
         return 1
 
@@ -46,6 +64,12 @@ def main() -> int:
     out_count = int(transformed.get("output_record_count", 0))
     avg_order = float(transformed.get("metrics", {}).get("avg_order_value", 0.0))
     if out_count < args.min_records:
+        if monitor:
+            monitor.error(
+                "quality_check_demo record count below threshold",
+                output_record_count=out_count,
+                min_records=args.min_records,
+            )
         print(
             f"Error: transformed output_record_count={out_count} is below min-records={args.min_records}"
         )
@@ -53,11 +77,15 @@ def main() -> int:
 
     latest = read_latest_history_event(history_path)
     if latest is None:
+        if monitor:
+            monitor.error("quality_check_demo missing load history", history_file=str(history_path))
         print(f"Error: no load history event found in {history_path}")
         return 3
 
     loaded_at_raw = latest.get("loaded_at")
     if not isinstance(loaded_at_raw, str):
+        if monitor:
+            monitor.error("quality_check_demo load event missing loaded_at", history_file=str(history_path))
         print("Error: latest load event missing loaded_at")
         return 4
     loaded_at = datetime.fromisoformat(loaded_at_raw)
@@ -65,12 +93,32 @@ def main() -> int:
         loaded_at = loaded_at.replace(tzinfo=timezone.utc)
     age = datetime.now(tz=timezone.utc) - loaded_at.astimezone(timezone.utc)
     if age > timedelta(hours=args.max_age_hours):
+        if monitor:
+            monitor.error(
+                "quality_check_demo stale load detected",
+                latest_load_age_seconds=int(age.total_seconds()),
+                max_age_hours=args.max_age_hours,
+            )
         print(
             f"Error: latest load is stale (age={age}, max_age_hours={args.max_age_hours})"
         )
         return 5
 
     status = "WARN" if avg_order < args.warn_average_below else "OK"
+    if monitor:
+        if status == "WARN":
+            monitor.warn(
+                "quality_check_demo average order below warning threshold",
+                avg_order_value=avg_order,
+                warn_average_below=args.warn_average_below,
+                output_record_count=out_count,
+            )
+        else:
+            monitor.info(
+                "quality_check_demo checks passed",
+                avg_order_value=avg_order,
+                output_record_count=out_count,
+            )
     print(
         f"{status}: quality checks passed, records={out_count}, avg_order={avg_order:.2f}, "
         f"latest_load_age={age}"

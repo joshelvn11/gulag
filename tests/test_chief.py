@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -308,3 +309,120 @@ def test_run_passes_script_args_string(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path, cfg)
     assert chief.command_run(config_path, job_name="job-1", respect_schedule=False) == 0
     assert argv_file.read_text(encoding="utf-8") == '["--mode", "full", "--label", "weekly summary"]'
+
+
+def test_monitor_endpoint_validation(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "task.py"
+    _write_script(script, "print('ok')\n")
+    cfg = _base_config({"frequency": "daily", "time": "06:00"}, [{"path": "scripts/task.py"}])
+    cfg["monitor"] = {"enabled": True, "endpoint": "127.0.0.1:7410"}
+    config_path = _write_config(tmp_path, cfg)
+    with pytest.raises(chief.ConfigError, match="endpoint must be an HTTP URL"):
+        chief.parse_config(config_path)
+
+
+def test_job_monitor_inherits_global_enabled(tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "task.py"
+    _write_script(script, "print('ok')\n")
+    cfg = {
+        "version": 1,
+        "defaults": {"working_dir": ".", "timezone": "UTC"},
+        "monitor": {"enabled": True, "endpoint": "http://127.0.0.1:7410"},
+        "jobs": [
+            {
+                "name": "inherits",
+                "schedule": {"frequency": "daily", "time": "01:00"},
+                "scripts": [{"path": "scripts/task.py"}],
+            },
+            {
+                "name": "disabled",
+                "monitor": {"enabled": False},
+                "schedule": {"frequency": "daily", "time": "02:00"},
+                "scripts": [{"path": "scripts/task.py"}],
+            },
+        ],
+    }
+    jobs = chief.parse_config(_write_config(tmp_path, cfg))
+    by_name = {job.name: job for job in jobs}
+    assert by_name["inherits"].monitor.enabled is True
+    assert by_name["inherits"].monitor.check.enabled is True
+    assert by_name["disabled"].monitor.enabled is False
+    assert by_name["disabled"].monitor.check.enabled is False
+
+
+def test_run_injects_monitor_context_env_vars(tmp_path: Path) -> None:
+    env_out = tmp_path / "env_capture.json"
+    _write_script(
+        tmp_path / "scripts" / "capture_env.py",
+        (
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            f"out = Path({str(env_out)!r})\n"
+            "keys = [\n"
+            "  'CHIEF_MONITOR_ENDPOINT',\n"
+            "  'CHIEF_MONITOR_API_KEY',\n"
+            "  'CHIEF_RUN_ID',\n"
+            "  'CHIEF_JOB_NAME',\n"
+            "  'CHIEF_SCRIPT_PATH',\n"
+            "  'CHIEF_SCHEDULED_FOR',\n"
+            "]\n"
+            "payload = {k: os.getenv(k) for k in keys}\n"
+            "out.write_text(json.dumps(payload), encoding='utf-8')\n"
+        ),
+    )
+    cfg = _base_config(
+        {"frequency": "daily", "time": "06:00"},
+        [{"path": "scripts/capture_env.py"}],
+    )
+    cfg["monitor"] = {
+        "enabled": True,
+        "endpoint": "http://127.0.0.1:9",
+        "api_key": "demo-key",
+        "timeout_ms": 1,
+        "buffer": {
+            "max_events": 50,
+            "flush_interval_ms": 25,
+            "spool_file": ".chief/test-spool.jsonl",
+        },
+    }
+
+    config_path = _write_config(tmp_path, cfg)
+    assert chief.command_run(config_path, job_name="job-1", respect_schedule=False) == 0
+    payload = json.loads(env_out.read_text(encoding="utf-8"))
+    assert payload["CHIEF_MONITOR_ENDPOINT"] == "http://127.0.0.1:9"
+    assert payload["CHIEF_MONITOR_API_KEY"] == "demo-key"
+    assert payload["CHIEF_JOB_NAME"] == "job-1"
+    assert payload["CHIEF_SCRIPT_PATH"] is not None
+    assert payload["CHIEF_RUN_ID"] is not None
+    assert payload["CHIEF_SCHEDULED_FOR"] is None
+
+
+def test_job_monitor_can_override_global_disabled(tmp_path: Path) -> None:
+    env_out = tmp_path / "env_capture_override.json"
+    _write_script(
+        tmp_path / "scripts" / "capture_env_override.py",
+        (
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            f"out = Path({str(env_out)!r})\n"
+            "payload = {'CHIEF_MONITOR_ENDPOINT': os.getenv('CHIEF_MONITOR_ENDPOINT')}\n"
+            "out.write_text(json.dumps(payload), encoding='utf-8')\n"
+        ),
+    )
+    cfg = _base_config(
+        {"frequency": "daily", "time": "06:00"},
+        [{"path": "scripts/capture_env_override.py"}],
+        monitor={"enabled": True},
+    )
+    cfg["monitor"] = {
+        "enabled": False,
+        "endpoint": "http://127.0.0.1:9",
+        "timeout_ms": 1,
+    }
+
+    config_path = _write_config(tmp_path, cfg)
+    assert chief.command_run(config_path, job_name="job-1", respect_schedule=False) == 0
+    payload = json.loads(env_out.read_text(encoding="utf-8"))
+    assert payload["CHIEF_MONITOR_ENDPOINT"] == "http://127.0.0.1:9"
