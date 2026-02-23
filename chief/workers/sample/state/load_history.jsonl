@@ -25,3 +25,11 @@
 {"loaded_at": "2026-02-23T22:35:07.601673+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886105", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
 {"loaded_at": "2026-02-23T22:36:06.702232+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886165", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
 {"loaded_at": "2026-02-23T22:37:06.737386+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886225", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:38:07.155313+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886285", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:39:06.836125+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886345", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:40:06.844123+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886405", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:41:07.003764+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886465", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:42:10.097289+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886525", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:43:06.972065+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886585", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:44:05.951327+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886644", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}
+{"loaded_at": "2026-02-23T22:45:05.857600+00:00", "warehouse": "demo-local", "table": "fact_sample_orders", "batch_id": "extract-1771886704", "rows_loaded": 27, "total_revenue": 2259.15, "avg_order_value": 83.67}

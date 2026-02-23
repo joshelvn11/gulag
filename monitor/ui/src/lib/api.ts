@@ -1,5 +1,6 @@
 import type {
   AlertsQueryParams,
+  CloseAlertResponse,
   AlertsResponse,
   EventsQueryParams,
   EventsResponse,
@@ -56,6 +57,22 @@ export async function fetchJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) {
+    const message = await parseError(response);
+    throw new Error(message);
+  }
+  return (await response.json()) as T;
+}
+
 export function getSummary(): Promise<SummaryResponse> {
   return fetchJson<SummaryResponse>("/v1/status/summary");
 }
@@ -92,4 +109,8 @@ export function getEvents(params: EventsQueryParams = {}): Promise<EventsRespons
     offset: params.offset,
   });
   return fetchJson<EventsResponse>(`/v1/events${query ? `?${query}` : ""}`);
+}
+
+export function closeAlert(alertId: number, reason = "manual-ui"): Promise<CloseAlertResponse> {
+  return postJson<CloseAlertResponse>(`/v1/alerts/${encodeURIComponent(String(alertId))}/close`, { reason });
 }

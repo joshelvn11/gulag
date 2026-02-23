@@ -301,6 +301,7 @@ curl -s -X POST http://127.0.0.1:7410/v1/events \
 
 - `GET /v1/alerts`
 - `GET /v1/events`
+- `POST /v1/alerts/:alertId/close`
 
 Filters:
 
@@ -313,6 +314,7 @@ Examples:
 curl -s 'http://127.0.0.1:7410/v1/status/summary'
 curl -s 'http://127.0.0.1:7410/v1/events?jobName=sample-etl-pipeline&limit=50'
 curl -s 'http://127.0.0.1:7410/v1/alerts?status=OPEN'
+curl -s -X POST http://127.0.0.1:7410/v1/alerts/1/close -H 'Content-Type: application/json' -d '{"reason":"manual"}'
 ```
 
 ## 9. SQLite Data Model
@@ -347,6 +349,7 @@ Each job has a check state with:
 - and no heartbeat arrived in time
 
 `RECOVERY` opens when a heartbeat arrives after a missed condition and missed alert closes.
+That `RECOVERY` alert is then auto-closed on the next heartbeat for the same job (or by TTL fallback).
 
 ## 10.3 Failure Alert
 
@@ -356,6 +359,12 @@ On successful completion after failure:
 
 - failure alert closes
 - recovery alert may open
+
+`RECOVERY` alerts are transient:
+
+- close automatically on the next heartbeat for that job
+- also close automatically after ~15 minutes if no later heartbeat arrives
+- can be manually closed via API/UI
 
 Deduping is keyed to avoid repeated open duplicates.
 

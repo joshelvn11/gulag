@@ -41,6 +41,21 @@ export async function fetchJson(path) {
     }
     return (await response.json());
 }
+export async function postJson(path, body) {
+    const response = await fetch(path, {
+        method: "POST",
+        headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body ?? {}),
+    });
+    if (!response.ok) {
+        const message = await parseError(response);
+        throw new Error(message);
+    }
+    return (await response.json());
+}
 export function getSummary() {
     return fetchJson("/v1/status/summary");
 }
@@ -73,4 +88,7 @@ export function getEvents(params = {}) {
         offset: params.offset,
     });
     return fetchJson(`/v1/events${query ? `?${query}` : ""}`);
+}
+export function closeAlert(alertId, reason = "manual-ui") {
+    return postJson(`/v1/alerts/${encodeURIComponent(String(alertId))}/close`, { reason });
 }

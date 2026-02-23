@@ -111,6 +111,7 @@ Chief emits lifecycle events and sample workers emit `worker.message` events via
 
 - `GET /v1/alerts`
 - `GET /v1/events`
+- `POST /v1/alerts/:alertId/close`
 
 ## Curl Examples
 
@@ -124,4 +125,16 @@ curl -s -X POST http://127.0.0.1:7410/v1/events \
 curl -s 'http://127.0.0.1:7410/v1/events?jobName=sample-etl-pipeline&limit=20'
 
 curl -s 'http://127.0.0.1:7410/v1/alerts?status=OPEN'
+
+curl -s -X POST http://127.0.0.1:7410/v1/alerts/1/close \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"manual"}'
 ```
+
+## Alert Closing Behavior
+
+- `FAILURE` alerts auto-close after a later successful completion.
+- `MISSED` alerts auto-close after a later heartbeat for the same job.
+- `RECOVERY` alerts auto-close on the next heartbeat for that job.
+- `RECOVERY` alerts also auto-close after about 15 minutes if no new heartbeat arrives.
+- Any open alert can be manually closed from the UI Alerts page or by calling `POST /v1/alerts/:alertId/close`.

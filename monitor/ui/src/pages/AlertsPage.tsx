@@ -1,8 +1,8 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { getAlerts } from "../lib/api";
+import { closeAlert, getAlerts } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 import { visiblePollingInterval } from "../lib/polling";
 import type { AlertRow } from "../lib/types";
@@ -15,22 +15,8 @@ import { StatusBadge } from "../components/StatusBadge";
 
 const PAGE_SIZE = 25;
 
-const columns: Array<ColumnDef<AlertRow>> = [
-  { accessorKey: "jobName", header: "Job" },
-  { accessorKey: "alertType", header: "Type" },
-  { accessorKey: "severity", header: "Severity", cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} /> },
-  { accessorKey: "status", header: "Status", cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} /> },
-  { accessorKey: "openedAt", header: "Opened", cell: ({ getValue }) => formatDateTime(String(getValue() ?? "")) },
-  { accessorKey: "closedAt", header: "Closed", cell: ({ getValue }) => formatDateTime((getValue() as string | null) ?? null) },
-  { accessorKey: "title", header: "Title" },
-  {
-    id: "details",
-    header: "Details",
-    cell: ({ row }) => <JsonDetails value={row.original.details ?? {}} />,
-  },
-];
-
 export function AlertsPage() {
+  const queryClient = useQueryClient();
   const [jobName, setJobName] = useState("");
   const [status, setStatus] = useState("");
   const [alertType, setAlertType] = useState("");
@@ -55,6 +41,64 @@ export function AlertsPage() {
     refetchInterval: () => visiblePollingInterval(),
   });
 
+  const closeMutation = useMutation({
+    mutationFn: (input: { alertId: number }) => closeAlert(input.alertId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["alerts"] }),
+        queryClient.invalidateQueries({ queryKey: ["summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+      ]);
+    },
+  });
+
+  const columns = useMemo<Array<ColumnDef<AlertRow>>>(
+    () => [
+      { accessorKey: "jobName", header: "Job" },
+      { accessorKey: "alertType", header: "Type" },
+      {
+        accessorKey: "severity",
+        header: "Severity",
+        cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} />,
+      },
+      {
+        accessorKey: "status",
+        header: "Status",
+        cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} />,
+      },
+      { accessorKey: "openedAt", header: "Opened", cell: ({ getValue }) => formatDateTime(String(getValue() ?? "")) },
+      { accessorKey: "closedAt", header: "Closed", cell: ({ getValue }) => formatDateTime((getValue() as string | null) ?? null) },
+      { accessorKey: "title", header: "Title" },
+      {
+        id: "details",
+        header: "Details",
+        cell: ({ row }) => <JsonDetails value={row.original.details ?? {}} />,
+      },
+      {
+        id: "actions",
+        header: "Actions",
+        cell: ({ row }) => {
+          const isOpen = row.original.status === "OPEN";
+          const isPending = closeMutation.isPending && closeMutation.variables?.alertId === row.original.id;
+          if (!isOpen) {
+            return <span className="muted">-</span>;
+          }
+          return (
+            <button
+              type="button"
+              className="button button--danger"
+              disabled={isPending}
+              onClick={() => closeMutation.mutate({ alertId: row.original.id })}
+            >
+              {isPending ? "Closing..." : "Close"}
+            </button>
+          );
+        },
+      },
+    ],
+    [closeMutation.isPending, closeMutation.mutate, closeMutation.variables?.alertId]
+  );
+
   const onFilterSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setPage(0);
@@ -74,6 +118,7 @@ export function AlertsPage() {
       />
 
       {query.error ? <ErrorBanner message={(query.error as Error).message} /> : null}
+      {closeMutation.error ? <ErrorBanner message={(closeMutation.error as Error).message} /> : null}
 
       <form className="filters" onSubmit={onFilterSubmit}>
         <label>

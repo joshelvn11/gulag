@@ -7,6 +7,7 @@ const HEARTBEAT_EVENT_TYPES = new Set(["job.started", "job.completed", "job.fail
 const CHIEF_HEARTBEAT_EVENT_TYPE = "chief.heartbeat";
 const DEFAULT_CHIEF_OFFLINE_AFTER_SECONDS = 45;
 const MIN_CHIEF_OFFLINE_AFTER_SECONDS = 5;
+const DEFAULT_RECOVERY_AUTO_CLOSE_SECONDS = 900;
 
 type EventPayload = {
   sourceType: "chief" | "worker" | "monitor";
@@ -231,7 +232,7 @@ export class MonitorService {
       .run();
   }
 
-  private closeOpenAlerts(jobName: string, alertType: "FAILURE" | "MISSED"): number {
+  private closeOpenAlerts(jobName: string, alertType: "FAILURE" | "MISSED" | "RECOVERY"): number {
     const now = nowIso();
     const existing = this.db
       .select({ id: alerts.id })
@@ -248,6 +249,20 @@ export class MonitorService {
         .run();
     }
     return count;
+  }
+
+  private closeStaleRecoveryAlerts(ttlSeconds: number = DEFAULT_RECOVERY_AUTO_CLOSE_SECONDS): number {
+    if (ttlSeconds <= 0) {
+      return 0;
+    }
+    const now = nowIso();
+    const cutoff = new Date(Date.now() - ttlSeconds * 1000).toISOString();
+    const result = this.db
+      .update(alerts)
+      .set({ status: "CLOSED", closedAt: now })
+      .where(and(eq(alerts.alertType, "RECOVERY"), eq(alerts.status, "OPEN"), lt(alerts.openedAt, cutoff)))
+      .run();
+    return result?.changes ?? 0;
   }
 
   private openAlert(params: {
@@ -337,6 +352,9 @@ export class MonitorService {
       .limit(1)
       .get();
 
+    // Keep RECOVERY alerts transient: close prior ones when the next job heartbeat arrives.
+    this.closeOpenAlerts(jobName, "RECOVERY");
+
     this.db
       .update(checkStates)
       .set({
@@ -421,6 +439,8 @@ export class MonitorService {
   }
 
   evaluateChecks(): { late: number; down: number; openedMissed: number } {
+    this.closeStaleRecoveryAlerts();
+
     const rows = this.db.select().from(checkStates).where(eq(checkStates.enabled, true)).all();
     const now = new Date();
     let late = 0;
@@ -659,6 +679,50 @@ export class MonitorService {
 
     const rows = where ? query.where(where).all() : query.all();
     return rows.map((row: any) => ({ ...row, details: parseJson<Record<string, unknown>>(row.detailsJson, {}) }));
+  }
+
+  closeAlertById(alertId: number, reason: string) {
+    const existing = this.db
+      .select({
+        id: alerts.id,
+        status: alerts.status,
+        closedAt: alerts.closedAt,
+      })
+      .from(alerts)
+      .where(eq(alerts.id, alertId))
+      .limit(1)
+      .get() as { id: number; status: string; closedAt: string | null } | undefined;
+
+    if (!existing) {
+      return { found: false as const, updated: false as const };
+    }
+
+    if (existing.status === "CLOSED") {
+      return {
+        found: true as const,
+        updated: false as const,
+        reason,
+        alert: existing,
+      };
+    }
+
+    const closedAt = nowIso();
+    this.db
+      .update(alerts)
+      .set({ status: "CLOSED", closedAt })
+      .where(and(eq(alerts.id, alertId), eq(alerts.status, "OPEN")))
+      .run();
+
+    return {
+      found: true as const,
+      updated: true as const,
+      reason,
+      alert: {
+        id: alertId,
+        status: "CLOSED",
+        closedAt,
+      },
+    };
   }
 
   listEvents(filters: {

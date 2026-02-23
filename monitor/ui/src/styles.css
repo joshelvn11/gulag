@@ -298,6 +298,17 @@ button {
   background: var(--primary-strong);
 }
 
+.button--danger {
+  background: rgba(196, 69, 54, 0.1);
+  border-color: rgba(196, 69, 54, 0.4);
+  color: #812f24;
+}
+
+.button--danger:hover {
+  background: rgba(196, 69, 54, 0.18);
+  border-color: var(--danger);
+}
+
 .filters {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

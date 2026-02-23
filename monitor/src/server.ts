@@ -30,6 +30,9 @@ const eventBatchSchema = z.union([
   z.array(eventSchema),
   z.object({ events: z.array(eventSchema) }),
 ]);
+const closeAlertSchema = z.object({
+  reason: z.string().trim().min(1).max(200).optional(),
+});
 
 function coercePositiveInt(raw: unknown, fallback: number, max: number): number {
   if (typeof raw !== "string") {
@@ -128,6 +131,25 @@ function main(): void {
       return res.status(404).json({ error: "Job not found in check state", jobName: req.params.jobName });
     }
     return res.json(details);
+  });
+
+  app.post("/v1/alerts/:alertId/close", (req: Request, res: Response) => {
+    const alertId = Number.parseInt(req.params.alertId, 10);
+    if (!Number.isFinite(alertId) || alertId <= 0) {
+      return res.status(400).json({ error: "alertId must be a positive integer" });
+    }
+
+    const parsed = closeAlertSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid close payload", details: parsed.error.flatten() });
+    }
+
+    const reason = parsed.data.reason ?? "manual";
+    const result = service.closeAlertById(alertId, reason);
+    if (!result.found) {
+      return res.status(404).json({ error: "Alert not found", alertId });
+    }
+    return res.json(result);
   });
 
   app.get("/v1/alerts", (req: Request, res: Response) => {

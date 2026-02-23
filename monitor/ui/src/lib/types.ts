@@ -89,6 +89,17 @@ export type AlertsResponse = {
   offset: number;
 };
 
+export type CloseAlertResponse = {
+  found: boolean;
+  updated: boolean;
+  reason: string;
+  alert: {
+    id: number;
+    status: string;
+    closedAt: string | null;
+  };
+};
+
 export type EventsResponse = {
   events: EventRow[];
   limit: number;

@@ -1,8 +1,9 @@
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { getJobDetails } from "../lib/api";
+import { closeAlert, getJobDetails } from "../lib/api";
 import { formatDateTime, formatDuration } from "../lib/format";
 import { visiblePollingInterval } from "../lib/polling";
 import type { AlertRow, EventRow } from "../lib/types";
@@ -11,14 +12,6 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { JsonDetails } from "../components/JsonDetails";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
-
-const alertColumns: Array<ColumnDef<AlertRow>> = [
-  { accessorKey: "alertType", header: "Type" },
-  { accessorKey: "severity", header: "Severity", cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} /> },
-  { accessorKey: "status", header: "Status", cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} /> },
-  { accessorKey: "openedAt", header: "Opened", cell: ({ getValue }) => formatDateTime(String(getValue() ?? "")) },
-  { accessorKey: "title", header: "Title" },
-];
 
 const eventColumns: Array<ColumnDef<EventRow>> = [
   { accessorKey: "eventAt", header: "Event Time", cell: ({ getValue }) => formatDateTime(String(getValue() ?? "")) },
@@ -34,6 +27,7 @@ const eventColumns: Array<ColumnDef<EventRow>> = [
 ];
 
 export function JobDetailPage() {
+  const queryClient = useQueryClient();
   const params = useParams<{ jobName: string }>();
   const jobName = params.jobName ?? "";
 
@@ -43,6 +37,58 @@ export function JobDetailPage() {
     enabled: Boolean(jobName),
     refetchInterval: () => visiblePollingInterval(),
   });
+
+  const closeMutation = useMutation({
+    mutationFn: (input: { alertId: number }) => closeAlert(input.alertId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["job-detail", jobName] }),
+        queryClient.invalidateQueries({ queryKey: ["alerts"] }),
+        queryClient.invalidateQueries({ queryKey: ["summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+      ]);
+    },
+  });
+
+  const alertColumns = useMemo<Array<ColumnDef<AlertRow>>>(
+    () => [
+      { accessorKey: "alertType", header: "Type" },
+      {
+        accessorKey: "severity",
+        header: "Severity",
+        cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} />,
+      },
+      {
+        accessorKey: "status",
+        header: "Status",
+        cell: ({ getValue }) => <StatusBadge value={String(getValue() ?? "")} />,
+      },
+      { accessorKey: "openedAt", header: "Opened", cell: ({ getValue }) => formatDateTime(String(getValue() ?? "")) },
+      { accessorKey: "title", header: "Title" },
+      {
+        id: "actions",
+        header: "Actions",
+        cell: ({ row }) => {
+          const isOpen = row.original.status === "OPEN";
+          const isPending = closeMutation.isPending && closeMutation.variables?.alertId === row.original.id;
+          if (!isOpen) {
+            return <span className="muted">-</span>;
+          }
+          return (
+            <button
+              type="button"
+              className="button button--danger"
+              disabled={isPending}
+              onClick={() => closeMutation.mutate({ alertId: row.original.id })}
+            >
+              {isPending ? "Closing..." : "Close"}
+            </button>
+          );
+        },
+      },
+    ],
+    [closeMutation.isPending, closeMutation.mutate, closeMutation.variables?.alertId]
+  );
 
   return (
     <section className="stack">
@@ -62,6 +108,7 @@ export function JobDetailPage() {
       />
 
       {query.error ? <ErrorBanner message={(query.error as Error).message} /> : null}
+      {closeMutation.error ? <ErrorBanner message={(closeMutation.error as Error).message} /> : null}
 
       <article className="card">
         <h3>Check State</h3>
